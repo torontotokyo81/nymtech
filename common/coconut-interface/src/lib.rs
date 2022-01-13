@@ -16,6 +16,7 @@ pub struct Credential {
     #[getset(get = "pub")]
     signature: Signature,
 }
+
 impl Credential {
     pub fn new(
         n_params: u32,
@@ -42,7 +43,7 @@ impl Credential {
             .iter()
             .map(hash_to_scalar)
             .collect::<Vec<Attribute>>();
-        nymcoconut::verify_credential(&params, verification_key, &self.theta, &public_attributes)
+        nymcoconut::verify_bandwidth_credential(&params, verification_key, &self.theta, &public_attributes)
     }
 }
 
@@ -78,6 +79,7 @@ impl VerifyCredentialBody {
             .collect()
     }
 }
+
 //  All strings are base58 encoded representations of structs
 #[derive(Serialize, Deserialize, Debug, Getters, CopyGetters)]
 pub struct BlindSignRequestBody {

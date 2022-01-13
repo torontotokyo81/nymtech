@@ -5,17 +5,17 @@ use core::ops::Neg;
 use std::convert::TryFrom;
 use std::convert::TryInto;
 
-use bls12_381::{multi_miller_loop, G1Affine, G2Prepared, G2Projective, Scalar};
+use bls12_381::{G1Affine, G1Projective, G2Prepared, G2Projective, multi_miller_loop, Scalar};
 use group::{Curve, Group};
 
+use crate::Attribute;
 use crate::error::{CoconutError, Result};
-use crate::proofs::ProofKappaZeta;
+use crate::proofs::{ProofKappaNu, ProofKappaZeta};
 use crate::scheme::setup::Parameters;
 use crate::scheme::Signature;
 use crate::scheme::VerificationKey;
 use crate::traits::{Base58, Bytable};
 use crate::utils::try_deserialize_g2_projective;
-use crate::Attribute;
 
 // TODO NAMING: this whole thing
 // Theta
@@ -30,6 +30,31 @@ pub struct Theta {
     pub credential: Signature,
     // pi_v
     pub pi_v: ProofKappaZeta,
+}
+
+#[derive(Debug)]
+#[cfg_attr(test, derive(PartialEq))]
+pub struct ThetaCoconut {
+    // blinded_message (kappa)
+    pub blinded_message: G2Projective,
+    // nu
+    pub nu: G1Projective,
+    // sigma
+    pub credential: Signature,
+    // pi_v
+    pub pi_v: ProofKappaNu,
+}
+
+impl ThetaCoconut {
+    fn verify_proof(&self, params: &Parameters, verification_key: &VerificationKey) -> bool {
+        self.pi_v.verify(
+            params,
+            verification_key,
+            &self.credential,
+            &self.blinded_message,
+            &self.nu,
+        )
+    }
 }
 
 impl TryFrom<&[u8]> for Theta {
@@ -123,15 +148,72 @@ pub fn compute_kappa(
     params.gen2() * blinding_factor
         + verification_key.alpha
         + private_attributes
-            .iter()
-            .zip(verification_key.beta.iter())
-            .map(|(priv_attr, beta_i)| beta_i * priv_attr)
-            .sum::<G2Projective>()
+        .iter()
+        .zip(verification_key.beta.iter())
+        .map(|(priv_attr, beta_i)| beta_i * priv_attr)
+        .sum::<G2Projective>()
 }
 
 pub fn compute_zeta(params: &Parameters, serial_number: Attribute) -> G2Projective {
     params.gen2() * serial_number
 }
+
+pub fn prove_credential(
+    params: &Parameters,
+    verification_key: &VerificationKey,
+    signature: &Signature,
+    private_attributes: &[Attribute],
+) -> Result<ThetaCoconut> {
+    if verification_key.beta.len() < 2 {
+        return Err(
+            CoconutError::Verification(
+                format!("Tried to prove a credential for higher than supported by the provided verification key number of attributes (max: {}, requested: 2)",
+                        verification_key.beta.len()
+                )));
+    }
+
+    // Randomize the signature
+    let r = params.random_scalar();
+    let r_prime = params.random_scalar();
+    let h_prime = signature.0 * r_prime;
+    let s_prime = signature.1 * r_prime;
+    let rsignature = Signature(h_prime, s_prime);
+
+    let nu = rsignature.0 * r;
+
+    // blinded_message : kappa in the paper.
+    // Value kappa is needed since we want to show a signature sigma'.
+    // In order to verify sigma' we need both the verification key vk and the message m.
+    // However, we do not want to reveal m to whomever we are showing the signature.
+    // Thus, we need kappa which allows us to verify sigma'. In particular,
+    // kappa is computed on m as input, but thanks to the use or random value r,
+    // it does not reveal any information about m.
+    let blinded_message = compute_kappa(
+        params,
+        verification_key,
+        &private_attributes,
+        r,
+    );
+
+
+    let pi_v = ProofKappaNu::construct(
+        params,
+        verification_key,
+        &private_attributes,
+        &rsignature,
+        &r,
+        &blinded_message,
+        &nu,
+    );
+
+    Ok(ThetaCoconut {
+        blinded_message,
+        nu,
+        credential: rsignature,
+        pi_v,
+    })
+}
+
 
 pub fn prove_bandwidth_credential(
     params: &Parameters,
@@ -202,6 +284,47 @@ pub fn check_bilinear_pairing(p: &G1Affine, q: &G2Prepared, r: &G1Affine, s: &G2
 pub fn verify_credential(
     params: &Parameters,
     verification_key: &VerificationKey,
+    theta: &ThetaCoconut,
+    public_attributes: &[Attribute],
+) -> bool {
+    if public_attributes.len() + theta.pi_v.private_attributes_len() > verification_key.beta.len() {
+        return false;
+    }
+
+    if !theta.verify_proof(params, verification_key) {
+        return false;
+    }
+
+    let kappa = if public_attributes.is_empty() {
+        theta.blinded_message
+    } else {
+        let signed_public_attributes = public_attributes
+            .iter()
+            .zip(
+                verification_key
+                    .beta
+                    .iter()
+                    .skip(theta.pi_v.private_attributes_len()),
+            )
+            .map(|(pub_attr, beta_i)| beta_i * pub_attr)
+            .sum::<G2Projective>();
+
+        theta.blinded_message + signed_public_attributes
+    };
+
+
+    check_bilinear_pairing(
+        &theta.credential.0.to_affine(),
+        &G2Prepared::from(kappa.to_affine()),
+        &(theta.credential.1 + theta.nu).to_affine(),
+        params.prepared_miller_g2(),
+    ) && !bool::from(theta.credential.0.is_identity())
+}
+
+
+pub fn verify_bandwidth_credential(
+    params: &Parameters,
+    verification_key: &VerificationKey,
     theta: &Theta,
     public_attributes: &[Attribute],
 ) -> bool {
@@ -248,11 +371,11 @@ pub fn verify(
 ) -> bool {
     let kappa = (verification_key.alpha
         + public_attributes
-            .iter()
-            .zip(verification_key.beta.iter())
-            .map(|(m_i, b_i)| b_i * m_i)
-            .sum::<G2Projective>())
-    .to_affine();
+        .iter()
+        .zip(verification_key.beta.iter())
+        .map(|(m_i, b_i)| b_i * m_i)
+        .sum::<G2Projective>())
+        .to_affine();
 
     check_bilinear_pairing(
         &sig.0.to_affine(),
@@ -288,7 +411,7 @@ mod tests {
             serial_number,
             binding_number,
         )
-        .unwrap();
+            .unwrap();
 
         let bytes = theta.to_bytes();
         assert_eq!(Theta::try_from(bytes.as_slice()).unwrap(), theta);

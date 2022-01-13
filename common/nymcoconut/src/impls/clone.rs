@@ -1,4 +1,4 @@
-use crate::{BlindSignRequest, BlindedSignature, Bytable, Theta};
+use crate::{BlindedSignature, BlindSignRequest, Bytable, Theta};
 
 macro_rules! impl_clone {
     ($struct:ident) => {
