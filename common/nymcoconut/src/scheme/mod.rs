@@ -647,6 +647,10 @@ mod tests {
             Ciphertext(params.gen1() * r, params.gen1() * s),
         );
         let bytes = blinded_sig.to_bytes();
+        println!("BlindedSignature: {:?}", blinded_sig.to_bytes().len());
+        println!("BlindedSignature h: {:?}", blinded_sig.0.to_affine().to_compressed().len());
+        println!("BlindedSignature part a of c: {:?}", blinded_sig.1.0.to_affine().to_compressed().len());
+        println!("BlindedSignature part b of c: {:?}", blinded_sig.1.1.to_affine().to_compressed().len());
 
         // also make sure it is equivalent to the internal g1 compressed bytes concatenated
         let expected_bytes = [

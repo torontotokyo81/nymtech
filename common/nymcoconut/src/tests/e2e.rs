@@ -10,6 +10,7 @@ fn main() -> Result<(), CoconutError> {
 
     let public_attributes = params.n_random_scalars(2);
     let serial_number = params.random_scalar();
+    println!("Scalar: {:?}", serial_number.to_bytes().len());
     let binding_number = params.random_scalar();
     let private_attributes = vec![serial_number, binding_number];
 

@@ -487,7 +487,8 @@ mod tests {
         let private_attributes = params.n_random_scalars(2);
 
         let theta = prove_credential(&params, &keypair.verification_key(), &signature, &private_attributes).unwrap();
-        let bytes = theta.to_bytes();
-        assert_eq!(ThetaCoconut::try_from(bytes.as_slice()).unwrap(), theta);
+        let theta_bytes = theta.to_bytes();
+        println!("Theta Coconut (Prove credential) containing kappa, nu, credential and zk proof: {:?}", theta_bytes.len());
+        assert_eq!(ThetaCoconut::try_from(theta_bytes.as_slice()).unwrap(), theta);
     }
 }
