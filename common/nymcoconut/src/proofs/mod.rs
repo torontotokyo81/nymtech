@@ -473,6 +473,69 @@ impl ProofKappaNu {
     pub(crate) fn private_attributes_len(&self) -> usize {
         self.response_attributes.len()
     }
+
+    // challenge || response blinder || len attributes ||response attributes
+    pub(crate) fn to_bytes(&self) -> Vec<u8> {
+        let attributes_len = self.response_attributes.len(); // because we have serial number and the binding number
+        let mut bytes = Vec::with_capacity(8 + (1 + attributes_len + 1) as usize * 32);
+
+        bytes.extend_from_slice(&self.challenge.to_bytes());
+        bytes.extend_from_slice(&self.response_blinder.to_bytes());
+        bytes.extend_from_slice(&attributes_len.to_le_bytes());
+        for rm in &self.response_attributes {
+            bytes.extend_from_slice(&rm.to_bytes());
+        }
+
+        bytes
+    }
+
+    pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        // at the very minimum there must be a single attribute being proven
+        if bytes.len() < 8 + 32 * 3 || (bytes.len() - 8) % 32 != 0 {
+            return Err(CoconutError::DeserializationInvalidLength {
+                actual: bytes.len(),
+                modulus_target: bytes.len(),
+                modulus: 32,
+                object: "kappa and nu".to_string(),
+                target: 8 + 32 * 3,
+            });
+        }
+
+        let challenge_bytes = bytes[..32].try_into().unwrap();
+        let challenge = try_deserialize_scalar(
+            &challenge_bytes,
+            CoconutError::Deserialization("Failed to deserialize challenge".to_string()),
+        )?;
+
+        let blinder_bytes = bytes[32..64].try_into().unwrap();
+        let response_blinder = try_deserialize_scalar(
+            &blinder_bytes,
+            CoconutError::Deserialization("failed to deserialize the blinder".to_string()),
+        )?;
+
+        let rm_len = u64::from_le_bytes(bytes[64..72].try_into().unwrap());
+        if bytes[72..].len() != rm_len as usize * 32 {
+            return Err(
+                CoconutError::Deserialization(
+                    format!("Tried to deserialize proof of kappa and nu with insufficient number of bytes provided, expected {} got {}.", (rm_len + 1) as usize * 32, bytes[72..].len())
+                )
+            );
+        }
+
+        let rm_end = 72 + rm_len as usize * 32;
+        let response_attributes = try_deserialize_scalar_vec(
+            rm_len,
+            &bytes[72..rm_end],
+            CoconutError::Deserialization("Failed to deserialize attributes response".to_string()),
+        )?;
+
+
+        Ok(ProofKappaNu {
+            challenge,
+            response_attributes,
+            response_blinder,
+        })
+    }
 }
 
 #[derive(Debug)]

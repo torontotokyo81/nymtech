@@ -15,7 +15,7 @@ use crate::scheme::setup::Parameters;
 use crate::scheme::Signature;
 use crate::scheme::VerificationKey;
 use crate::traits::{Base58, Bytable};
-use crate::utils::try_deserialize_g2_projective;
+use crate::utils::{try_deserialize_g1_projective, try_deserialize_g2_projective};
 
 // TODO NAMING: this whole thing
 // Theta
@@ -45,6 +45,45 @@ pub struct ThetaCoconut {
     pub pi_v: ProofKappaNu,
 }
 
+impl TryFrom<&[u8]> for ThetaCoconut {
+    type Error = CoconutError;
+
+    fn try_from(bytes: &[u8]) -> Result<ThetaCoconut> {
+        if bytes.len() < 240 {
+            return Err(
+                CoconutError::Deserialization(
+                    format!("Tried to deserialize ThetaCoconut with insufficient number of bytes, expected >= 240, got {}", bytes.len()),
+                ));
+        }
+
+        let blinded_message_bytes = bytes[..96].try_into().unwrap();
+        let blinded_message = try_deserialize_g2_projective(
+            &blinded_message_bytes,
+            CoconutError::Deserialization(
+                "failed to deserialize the blinded message (kappa)".to_string(),
+            ),
+        )?;
+
+        let nu_bytes = bytes[96..144].try_into().unwrap();
+        let nu = try_deserialize_g1_projective(
+            &nu_bytes,
+            CoconutError::Deserialization(
+                "failed to deserialize the nu value".to_string(),
+            ),
+        )?;
+        let credential = Signature::try_from(&bytes[144..240])?;
+
+        let pi_v = ProofKappaNu::from_bytes(&bytes[240..])?;
+
+        Ok(ThetaCoconut {
+            blinded_message,
+            nu,
+            credential,
+            pi_v,
+        })
+    }
+}
+
 impl ThetaCoconut {
     fn verify_proof(&self, params: &Parameters, verification_key: &VerificationKey) -> bool {
         self.pi_v.verify(
@@ -54,6 +93,26 @@ impl ThetaCoconut {
             &self.blinded_message,
             &self.nu,
         )
+    }
+
+    // blinded message (kappa)  || nu || credential || pi_v
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let blinded_message_bytes = self.blinded_message.to_affine().to_compressed();
+        let nu_bytes = self.nu.to_affine().to_compressed();
+        let credential_bytes = self.credential.to_bytes();
+        let proof_bytes = self.pi_v.to_bytes();
+
+        let mut bytes = Vec::with_capacity(240 + proof_bytes.len());
+        bytes.extend_from_slice(&blinded_message_bytes);
+        bytes.extend_from_slice(&nu_bytes);
+        bytes.extend_from_slice(&credential_bytes);
+        bytes.extend_from_slice(&proof_bytes);
+
+        bytes
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<ThetaCoconut> {
+        ThetaCoconut::try_from(bytes)
     }
 }
 
@@ -415,5 +474,20 @@ mod tests {
 
         let bytes = theta.to_bytes();
         assert_eq!(Theta::try_from(bytes.as_slice()).unwrap(), theta);
+    }
+
+    #[test]
+    fn test_theta_coconut_roundtrip() {
+        let mut params = setup(4).unwrap();
+        let keypair = keygen(&mut params);
+        let r = params.random_scalar();
+        let s = params.random_scalar();
+
+        let signature = Signature(params.gen1() * r, params.gen1() * s);
+        let private_attributes = params.n_random_scalars(2);
+
+        let theta = prove_credential(&params, &keypair.verification_key(), &signature, &private_attributes).unwrap();
+        let bytes = theta.to_bytes();
+        assert_eq!(ThetaCoconut::try_from(bytes.as_slice()).unwrap(), theta);
     }
 }
